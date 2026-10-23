@@ -1,0 +1,412 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+
+# Initialize Policy weights
+def weights_init_(m):
+    if isinstance(m, nn.Linear):
+        torch.nn.init.xavier_uniform_(m.weight, gain=1)
+        torch.nn.init.constant_(m.bias, 0)
+
+class MLPVAE(nn.Module):
+    def __init__(self, state_dim, action_dim, context_dim, context_hidden_dim, K=5):
+        super(MLPVAE, self).__init__()
+
+        self.K = K
+        self.context_dim = context_dim
+
+        self.state_encoder = nn.Sequential(nn.Linear(state_dim, context_dim), nn.ReLU())
+        self.action_encoder = nn.Sequential(nn.Linear(action_dim, context_dim), nn.ReLU())
+        self.reward_encoder = nn.Sequential(nn.Linear(1, context_dim), nn.ReLU())
+        self.mlp = nn.Sequential(nn.Linear(3*context_dim, context_hidden_dim), nn.ReLU())        
+        # p(y=c|h)
+        self.cat_logits = nn.Linear(context_hidden_dim, K)
+
+        # output layer, output z
+        self.shared_fc = nn.Linear(context_hidden_dim, context_hidden_dim)
+        self.fc_mu = nn.Linear(context_hidden_dim, K * context_dim)
+        self.fc_logvar = nn.Linear(context_hidden_dim, K * context_dim)
+
+        # Gaussian mixture prior parameters
+        self.prior_logits = nn.Parameter(torch.zeros(K))
+        self.prior_pz_layer = nn.Sequential(
+            nn.Linear(K, context_hidden_dim), nn.ReLU(),
+            nn.Linear(context_hidden_dim, 2 * context_dim)
+        )
+
+
+        self.apply(weights_init_)
+
+    def forward(self, states, actions, rewards, sampling=True):
+        """
+        Actions, states, rewards should be given in form [sequence_len * batch_size * dim].
+        """
+        # shape should be: sequence_len x batch_size x dim
+        # states = states.reshape((-1, *states.shape[-2:]))
+        # actions = actions.reshape((-1, *actions.shape[-2:]))
+        # rewards = rewards.reshape((-1, *rewards.shape[-2:]))
+        states = states[-1, :, :]
+        actions = actions[-1, :, :]
+        rewards = rewards[-1, :, :]
+
+        # extract features for states, actions, rewards
+        hs = self.state_encoder(states)
+        ha = self.action_encoder(actions)
+        hr = self.reward_encoder(rewards)
+        h = torch.cat((ha, hs, hr), dim=-1)
+
+        mlp_output = self.mlp(h)
+        logits_y = self.cat_logits(mlp_output)      # [B, K]
+        qy = torch.softmax(logits_y, dim=-1)
+
+        feat = F.relu(self.shared_fc(mlp_output))
+        mu_all     = self.fc_mu(feat).view(feat.size(0), self.K, -1)        # [B,K,Dz]
+        logvar_all = self.fc_logvar(feat).view(feat.size(0), self.K, -1)    # [B,K,Dz]
+
+        # prior parameters
+        # py_logit = self.prior_logits_buf
+        # prior_mu, prior_logvar = self.prior_mu_buf, self.prior_logvar_buf
+        # py = torch.softmax(py_logit, dim=-1)
+        py_logit = self.prior_logits        # [K]
+        py = F.softmax(py_logit, dim=-1)
+        one_hot = torch.eye(self.K, device=mlp_output.device)  # [K,K]
+        mu_logvar = self.prior_pz_layer(one_hot)           # [K, 2*Dz]
+        mu_p = mu_logvar[:, :self.context_dim]
+        logvar_p = mu_logvar[:, self.context_dim:]
+        # expand to batch
+        B = mlp_output.size(0)
+        prior_mu = mu_p.unsqueeze(0).expand(B, self.K, self.context_dim)
+        prior_logvar = logvar_p.unsqueeze(0).expand(B, self.K, self.context_dim)
+
+        
+        if not sampling:
+            z = (qy.unsqueeze(-1) * mu_all).sum(dim=1)            # [B,Dz]
+            return {"z": z, "qy": qy, "mu_k": mu_all, "logvar_k": logvar_all,
+                    "prior": (py, prior_mu, prior_logvar, py_logit), "logits_y": logits_y}
+        
+        # reparameterization trick
+        mu = (qy.unsqueeze(-1) * mu_all).sum(dim=1)
+        logvar = (qy.unsqueeze(-1) * logvar_all).sum(dim=1)
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        z = mu + eps * std
+
+        return {"z": z, "qy": qy, "mu_k": mu_all, "logvar_k": logvar_all,
+                "prior": (py, prior_mu, prior_logvar, py_logit), "logits_y": logits_y}
+
+class GeneralEncoder(nn.Module):
+    def __init__(self, state_dim, action_dim, context_dim, context_hidden_dim):
+        super(GeneralEncoder, self).__init__()
+
+        self.state_encoder = nn.Sequential(nn.Linear(state_dim, context_dim), nn.ReLU())
+        self.action_encoder = nn.Sequential(nn.Linear(action_dim, context_dim), nn.ReLU())
+        self.reward_encoder = nn.Sequential(nn.Linear(1, context_dim), nn.ReLU())
+        self.next_state_encoder = nn.Sequential(nn.Linear(state_dim, context_dim), nn.ReLU())
+
+        self.gru = nn.GRU(input_size=3*context_dim, hidden_size=context_hidden_dim, num_layers=1)
+        for name, param in self.gru.named_parameters():
+            if 'bias' in name:
+                nn.init.constant_(param, 0)
+            elif 'weight' in name:
+                nn.init.orthogonal_(param)
+
+        # output layer, output z
+        self.context_output = nn.Linear(context_hidden_dim, context_dim)
+
+        self.apply(weights_init_)
+
+    def forward(self, states, actions, rewards,next_states):
+        """
+        Actions, states, rewards should be given in form [sequence_len * batch_size * dim].
+        """
+        # shape should be: sequence_len x batch_size x dim
+        states = states.reshape((-1, *states.shape[-2:]))
+        actions = actions.reshape((-1, *actions.shape[-2:]))
+        rewards = rewards.reshape((-1, *rewards.shape[-2:]))
+        next_states = next_states.reshape((-1, *next_states.shape[-2:]))
+
+        # extract features for states, actions, rewards
+        hs = self.state_encoder(states)
+        ha = self.action_encoder(actions)
+        hr = self.reward_encoder(rewards)
+        hn_s = self.next_state_encoder(next_states)
+        h = torch.cat((ha, hs, hr), dim=-1)
+
+        # gru_output: [seq_len * batch_size * hidden_dim]
+        gru_output, _ = self.gru(h)
+        contexts = self.context_output(gru_output[-1])
+        return contexts
+    
+class RNNContextEncoder(nn.Module):
+    def __init__(self, state_dim, action_dim, context_dim, context_hidden_dim):
+        super(RNNContextEncoder, self).__init__()
+
+        self.state_encoder = nn.Sequential(nn.Linear(state_dim, context_dim), nn.ReLU())
+        self.action_encoder = nn.Sequential(nn.Linear(action_dim, context_dim), nn.ReLU())
+        self.reward_encoder = nn.Sequential(nn.Linear(1, context_dim), nn.ReLU())
+
+        self.gru = nn.GRU(input_size=3*context_dim, hidden_size=context_hidden_dim, num_layers=1)
+        for name, param in self.gru.named_parameters():
+            if 'bias' in name:
+                nn.init.constant_(param, 0)
+            elif 'weight' in name:
+                nn.init.orthogonal_(param)
+
+        # output layer, output z
+        self.context_output = nn.Linear(context_hidden_dim, context_dim)
+
+        self.apply(weights_init_)
+
+    def forward(self, states, actions, rewards):
+        """
+        Actions, states, rewards should be given in form [sequence_len * batch_size * dim].
+        """
+        # shape should be: sequence_len x batch_size x dim
+        states = states.reshape((-1, *states.shape[-2:]))
+        actions = actions.reshape((-1, *actions.shape[-2:]))
+        rewards = rewards.reshape((-1, *rewards.shape[-2:]))
+
+        # extract features for states, actions, rewards
+        hs = self.state_encoder(states)
+        ha = self.action_encoder(actions)
+        hr = self.reward_encoder(rewards)
+        h = torch.cat((ha, hs, hr), dim=-1)
+
+        # gru_output: [seq_len * batch_size * hidden_dim]
+        gru_output, _ = self.gru(h)
+        contexts = self.context_output(gru_output[-1])
+        return contexts
+    
+class RNNContextVAE(nn.Module):
+    def __init__(self, state_dim, action_dim, context_dim, context_hidden_dim):
+        super(RNNContextVAE, self).__init__()
+
+        self.state_encoder = nn.Sequential(nn.Linear(state_dim, context_dim), nn.ReLU())
+        self.action_encoder = nn.Sequential(nn.Linear(action_dim, context_dim), nn.ReLU())
+        self.reward_encoder = nn.Sequential(nn.Linear(1, context_dim), nn.ReLU())
+
+        self.gru = nn.GRU(input_size=3*context_dim, hidden_size=context_hidden_dim, num_layers=1)
+        for name, param in self.gru.named_parameters():
+            if 'bias' in name:
+                nn.init.constant_(param, 0)
+            elif 'weight' in name:
+                nn.init.orthogonal_(param)
+
+        # output layer, output z
+        self.fc_mu = nn.Linear(context_hidden_dim, context_dim)
+        self.fc_logvar = nn.Linear(context_hidden_dim, context_dim)
+
+        self.apply(weights_init_)
+
+    def forward(self, states, actions, rewards, sampling=True):
+        """
+        Actions, states, rewards should be given in form [sequence_len * batch_size * dim].
+        """
+        # shape should be: sequence_len x batch_size x dim
+        states = states.reshape((-1, *states.shape[-2:]))
+        actions = actions.reshape((-1, *actions.shape[-2:]))
+        rewards = rewards.reshape((-1, *rewards.shape[-2:]))
+
+        # extract features for states, actions, rewards
+        hs = self.state_encoder(states)
+        ha = self.action_encoder(actions)
+        hr = self.reward_encoder(rewards)
+        h = torch.cat((ha, hs, hr), dim=-1)
+
+        # gru_output: [seq_len * batch_size * hidden_dim]
+        gru_output, _ = self.gru(h)
+        last_h = gru_output[-1]
+        mu = self.fc_mu(last_h)
+        logvar = self.fc_logvar(last_h)
+        # logvar = self.fc_logvar(last_h).clamp(-4, 20) 
+
+        # reparameterization trick
+        if not sampling:
+            return mu, mu, logvar
+        
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        z = mu + eps * std
+
+        return z, mu, logvar
+    
+class RNNContextGMVAE(nn.Module):
+    def __init__(self, state_dim, action_dim, context_dim, context_hidden_dim, K=5):
+        super(RNNContextGMVAE, self).__init__()
+
+        self.K = K
+        self.context_dim = context_dim
+
+        self.state_encoder = nn.Sequential(nn.Linear(state_dim, context_dim), nn.ReLU())
+        self.action_encoder = nn.Sequential(nn.Linear(action_dim, context_dim), nn.ReLU())
+        self.reward_encoder = nn.Sequential(nn.Linear(1, context_dim), nn.ReLU())
+
+        # GRU layer
+        self.gru = nn.GRU(input_size=3*context_dim, hidden_size=context_hidden_dim, num_layers=1)
+        for name, param in self.gru.named_parameters():
+            if 'bias' in name:
+                nn.init.constant_(param, 0)
+            elif 'weight' in name:
+                nn.init.orthogonal_(param)
+
+        # p(y=c|h)
+        self.cat_logits = nn.Linear(context_hidden_dim, K)
+
+        # output layer, output z
+        self.shared_fc = nn.Linear(context_hidden_dim, context_hidden_dim)
+        self.fc_mu = nn.Linear(context_hidden_dim, K * context_dim)
+        self.fc_logvar = nn.Linear(context_hidden_dim, K * context_dim)
+
+        # Gaussian mixture prior parameters
+        # self.register_buffer("prior_logits_buf", torch.zeros(K))  # uniform
+        # self.register_buffer("prior_mu_buf", torch.randn(K, context_dim)) # random init
+        # self.register_buffer("prior_logvar_buf", torch.zeros(K, context_dim)) 
+        self.prior_logits = nn.Parameter(torch.zeros(K))
+        self.prior_pz_layer = nn.Sequential(
+            nn.Linear(K, context_hidden_dim), nn.ReLU(),
+            nn.Linear(context_hidden_dim, 2 * context_dim)
+        )
+
+
+        self.apply(weights_init_)
+
+    def forward(self, states, actions, rewards, sampling=True):
+        """
+        Actions, states, rewards should be given in form [sequence_len * batch_size * dim].
+        """
+        # shape should be: sequence_len x batch_size x dim
+        states = states.reshape((-1, *states.shape[-2:]))
+        actions = actions.reshape((-1, *actions.shape[-2:]))
+        rewards = rewards.reshape((-1, *rewards.shape[-2:]))
+
+        # extract features for states, actions, rewards
+        hs = self.state_encoder(states)
+        ha = self.action_encoder(actions)
+        hr = self.reward_encoder(rewards)
+        h = torch.cat((ha, hs, hr), dim=-1)
+
+        # gru_output: [seq_len * batch_size * hidden_dim]
+        gru_output, _ = self.gru(h)
+        last_h = gru_output[-1]
+        logits_y = self.cat_logits(last_h)      # [B, K]
+        qy = torch.softmax(logits_y, dim=-1)
+
+        feat = F.relu(self.shared_fc(last_h))
+        mu_all     = self.fc_mu(feat).view(feat.size(0), self.K, -1)        # [B,K,Dz]
+        logvar_all = self.fc_logvar(feat).view(feat.size(0), self.K, -1)    # [B,K,Dz]
+
+        # prior parameters
+        # py_logit = self.prior_logits_buf
+        # prior_mu, prior_logvar = self.prior_mu_buf, self.prior_logvar_buf
+        # py = torch.softmax(py_logit, dim=-1)
+        py_logit = self.prior_logits        # [K]
+        py = F.softmax(py_logit, dim=-1)
+        one_hot = torch.eye(self.K, device=last_h.device)  # [K,K]
+        mu_logvar = self.prior_pz_layer(one_hot)           # [K, 2*Dz]
+        mu_p = mu_logvar[:, :self.context_dim]
+        logvar_p = mu_logvar[:, self.context_dim:]
+        # expand to batch
+        B = last_h.size(0)
+        prior_mu = mu_p.unsqueeze(0).expand(B, self.K, self.context_dim)
+        prior_logvar = logvar_p.unsqueeze(0).expand(B, self.K, self.context_dim)
+
+        
+        if not sampling:
+            z = (qy.unsqueeze(-1) * mu_all).sum(dim=1)            # [B,Dz]
+            return {"z": z, "qy": qy, "mu_k": mu_all, "logvar_k": logvar_all,
+                    "prior": (py, prior_mu, prior_logvar, py_logit), "logits_y": logits_y}
+        
+        # reparameterization trick
+        mu = (qy.unsqueeze(-1) * mu_all).sum(dim=1)
+        logvar = (qy.unsqueeze(-1) * logvar_all).sum(dim=1)
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        z = mu + eps * std
+
+        return {"z": z, "qy": qy, "mu_k": mu_all, "logvar_k": logvar_all,
+                "prior": (py, prior_mu, prior_logvar, py_logit), "logits_y": logits_y}
+
+class RewardDecoder(nn.Module):
+    def __init__(self, state_dim, action_dim, context_dim, context_hidden_dim):
+        super(RewardDecoder, self).__init__()
+
+        self.state_encoder = nn.Sequential(nn.Linear(state_dim, context_dim), nn.ReLU())
+        self.action_encoder = nn.Sequential(nn.Linear(action_dim, context_dim), nn.ReLU())
+        
+        # self.linear1 = nn.Linear(context_dim*4, context_hidden_dim)
+        self.linear1 = nn.Linear(context_dim*3, context_hidden_dim)
+        self.linear2 = nn.Linear(context_hidden_dim, context_hidden_dim)
+        self.linear3 = nn.Linear(context_hidden_dim, 1)
+
+        self.apply(weights_init_)
+
+    def forward(self, state, action, context):
+        # extract features for states, actions
+        hs = self.state_encoder(state)
+        ha = self.action_encoder(action)
+        # hs_next = self.state_encoder(next_state)
+        # h = torch.cat((hs, ha, hs_next, context), dim=-1)
+        h = torch.cat((hs, ha, context), dim=-1)
+
+        h = F.relu(self.linear1(h))
+        h = F.relu(self.linear2(h))
+        reward_predict = self.linear3(h)
+        
+        return reward_predict
+
+class StateDecoder(nn.Module):
+    def __init__(self, state_dim, action_dim, context_dim, context_hidden_dim):
+        super(StateDecoder, self).__init__()
+
+        self.state_encoder = nn.Sequential(nn.Linear(state_dim, context_dim), nn.ReLU())
+        self.action_encoder = nn.Sequential(nn.Linear(action_dim, context_dim), nn.ReLU())
+        self.reward_encoder = nn.Sequential(nn.Linear(1, context_dim), nn.ReLU())
+        
+        self.linear1 = nn.Linear(context_dim*3, context_hidden_dim)
+        self.linear2 = nn.Linear(context_hidden_dim, context_hidden_dim)
+        self.linear3 = nn.Linear(context_hidden_dim, state_dim)
+
+        self.apply(weights_init_)
+
+    def forward(self, state, action, reward, next_state, context):
+        # extract features for states, actions
+        hs = self.state_encoder(state)
+        ha = self.action_encoder(action)
+        hs_next = self.state_encoder(next_state)
+        hr = self.reward_encoder(reward)
+        h = torch.cat((hs, ha,context), dim=-1)
+
+        h = F.relu(self.linear1(h))
+        h = F.relu(self.linear2(h))
+        state_predict = self.linear3(h)
+        
+        return state_predict
+
+class MDPProbDecoder(nn.Module):
+    def __init__(self, state_dim, action_dim, context_dim, context_hidden_dim, output_dim):
+        super(MDPProbDecoder, self).__init__()
+
+        self.state_encoder = nn.Sequential(nn.Linear(state_dim, context_dim), nn.ReLU())
+        self.action_encoder = nn.Sequential(nn.Linear(action_dim, context_dim), nn.ReLU())
+        
+        # self.linear1 = nn.Linear(context_dim*4, context_hidden_dim)
+        self.linear1 = nn.Linear(context_dim*3, context_hidden_dim)
+        self.linear2 = nn.Linear(context_hidden_dim, context_hidden_dim)
+        self.mu_head = nn.Linear(context_hidden_dim, output_dim)
+        self.logvar_head = nn.Linear(context_hidden_dim, output_dim)
+
+        self.apply(weights_init_)
+
+    def forward(self, state, action, context):
+        # extract features for states, actions
+        hs = self.state_encoder(state)
+        ha = self.action_encoder(action)
+        h = torch.cat((hs, ha, context), dim=-1)
+
+        h = F.relu(self.linear1(h))
+        h = F.relu(self.linear2(h))
+        mu = self.mu_head(h)
+        logvar = self.logvar_head(h)
+        
+        return mu, logvar

@@ -1,0 +1,7 @@
+# non-code files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+metaworld/**
+**/.DS_Store
