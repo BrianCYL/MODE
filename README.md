@@ -239,10 +239,17 @@ Experiments expose a `--seed` argument and initialize NumPy and PyTorch random n
 
 ## Citation
 
-If you use this code in academic work, please cite the associated thesis or paper. The BibTeX entry will be added here once the final publication metadata is available.
+If you use this code in academic work, please cite our paper as:
 
 ```bibtex
-% Add the final paper or thesis citation here.
+@inproceedings{lin2026multi,
+  title={Multi-modal Offline Decomposition for Expertise: A Structural Approach to Robust Offline Meta-RL},
+  author={Chun-Yu, Lin and Pei-Yuan, Wu},
+  booktitle={Joint European Conference on Machine Learning and Knowledge Discovery in Databases},
+  pages={340--356},
+  year={2026},
+  organization={Springer}
+}
 ```
 
 ## License
