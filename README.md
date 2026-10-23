@@ -220,7 +220,7 @@ tensorboard --logdir runs
 
 Then open the local TensorBoard address printed by the command. -->
 
-## Reproducibility
+<!-- ## Reproducibility
 
 Experiments expose a `--seed` argument and initialize NumPy and PyTorch random number generators. The downstream sweep uses the seeds `0`, `530`, `1225`, `326`, and `412`. For comparable results, keep the following fixed across runs:
 
@@ -228,14 +228,13 @@ Experiments expose a `--seed` argument and initialize NumPy and PyTorch random n
 - Dataset files and task ordering
 - `--env_type` and `--data_quality`
 - Context horizon and model hyperparameters
-- Device and numerical precision
+- Device and numerical precision -->
 
 ## Notes
 
 - The code uses the legacy Gym API (`gym==0.15.7`) rather than the modern Gymnasium API.
 - MuJoCo environments require a working local MuJoCo installation in addition to the Python package.
 - The default training scripts assume that datasets and, for downstream training, compatible context checkpoints are already available.
-- Some modules under `src/tp_envs` are retained for compatibility with the original environment implementations and are not all part of the main three-stage training path.
 
 ## Citation
 
