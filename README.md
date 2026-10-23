@@ -1,7 +1,8 @@
-# MODE
+# Multi-modal Offline Decomposition for Expertise (MODE)
 
 The official code repository for the ECML 2026 paper, [**Multi-modal Offline Decomposition for Expertise (MODE)**](https://link.springer.com/chapter/10.1007/978-3-032-37670-1_20).
 
+## Overview
 MODE is a context-conditioned framework for offline meta-reinforcement learning. The method infers a compact latent task representation from short transition histories and uses the inferred context for downstream offline policy learning.
 
 The implementation is organized around a data preparation procedure followed by
@@ -12,8 +13,9 @@ three training stages:
 3. **Meta-policy and critic training.** A context-conditioned meta-policy selects mixture components, while an ensemble of critics provides the value signal for policy optimization.
 
 The complete
-meta-training workflow is illustrated in ![meta_training.pdf](asset/meta_training.png), and meta-testing procedure is in
-![meta_testing.pdf](asset/meta_testing.png).
+meta-training and meta-testing workflow is illustrated as below:
+ ![meta_training.pdf](asset/meta_training.png)
+![meta_testing.pdf](asset/meta_testing.png)
 
 <!-- 
 ## Repository Structure
