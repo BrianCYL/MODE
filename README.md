@@ -1,6 +1,6 @@
 # MODE
 
-The official code repository for the ECML 2026 paper, **Multi-modal Offline Decomposition for Expertise (MODE)**.
+The official code repository for the ECML 2026 paper, [**Multi-modal Offline Decomposition for Expertise (MODE)**](https://link.springer.com/chapter/10.1007/978-3-032-37670-1_20).
 
 MODE is a context-conditioned framework for offline meta-reinforcement learning. The method infers a compact latent task representation from short transition histories and uses the inferred context for downstream offline policy learning.
 
@@ -11,7 +11,10 @@ three training stages:
 2. **Behavior policy decomposition.** A Gaussian-mixture policy models multimodal behavior conditioned on the current state and inferred context.
 3. **Meta-policy and critic training.** A context-conditioned meta-policy selects mixture components, while an ensemble of critics provides the value signal for policy optimization.
 
-The code supports custom continuous-control environments and randomized-parameter tasks.
+The complete
+meta-training workflow is illustrated in ![meta_training.pdf](asset/meta_training.png), and meta-testing procedure is in
+![meta_testing.pdf](asset/meta_testing.png).
+
 <!-- 
 ## Repository Structure
 
@@ -52,11 +55,6 @@ pip install -r requirements.txt
 ```
 
 The MuJoCo installation may also require platform-specific system libraries and simulator configuration.
-
-All commands should be run from the `MODE` repository root. The complete
-meta-training workflow is illustrated in ![meta_training.pdf](asset/meta_training.pdf).
-The corresponding meta-testing procedure is illustrated in
-![meta_testing.pdf](asset/meta_testing.pdf).
 
 ## Data Preparation
 
