@@ -7,12 +7,12 @@ MODE is a context-conditioned framework for offline meta-reinforcement learning.
 The implementation is organized around a data preparation procedure followed by
 three training stages:
 
-1. **Context encoder pretraining.** An RNN-based GMVAE encodes short sequences of states, actions, and rewards. State-transition and reward predictors provide auxiliary reconstruction objectives.
+1. **Context encoder pretraining.** An RNN-based Gaussian Mixture VAE encodes short sequences of states, actions, and rewards. State-transition and reward predictors provide auxiliary reconstruction objectives.
 2. **Behavior policy decomposition.** A Gaussian-mixture policy models multimodal behavior conditioned on the current state and inferred context.
 3. **Meta-policy and critic training.** A context-conditioned meta-policy selects mixture components, while an ensemble of critics provides the value signal for policy optimization.
 
-The code supports custom continuous-control environments, randomized-parameter tasks, and the Meta-World Reach task.
-
+The code supports custom continuous-control environments and randomized-parameter tasks.
+<!-- 
 ## Repository Structure
 
 ```text
@@ -39,7 +39,7 @@ The code supports custom continuous-control environments, randomized-parameter t
 ├── utils.py                         # Root-level utilities
 ├── requirements.txt                 # Python dependencies
 └── LICENSE                          # Repository license
-```
+``` -->
 
 ## Installation
 
@@ -53,72 +53,19 @@ pip install -r requirements.txt
 
 The MuJoCo installation may also require platform-specific system libraries and simulator configuration.
 
-## Supported MuJoCo Environments
-
-The main training entry points expose the following environment types through `--env_type`:
-
-- `point_robot`
-- `cheetah_vel`
-- `cheetah_dir`
-- `ant_dir`
-- `hopper`
-- `walker`
-- `reach`
-
-The corresponding default environment names and task settings are defined in `configs/`. The `reach` setting uses the Meta-World `reach-v2` task through the wrapper in `src/envs.py`.
-
-## Dataset Layout
-
-The training scripts expect offline datasets under `datasets/`, relative to the repository root. For an environment named `ENV_NAME` and a data setting named `QUALITY`, the expected layout is:
-
-```text
-datasets/
-└── ENV_NAME/
-    └── QUALITY/
-        ├── task_info.json
-        ├── dataset_task_0.pkl
-        ├── dataset_task_1.pkl
-        └── ...
-```
-
-Each task file should contain the transition arrays used by `context/dataset.py`, including observations, actions, rewards, terminal indicators, and masks. The standard format uses keys such as:
-
-```text
-observations, actions, rewards, next_observations,
-terminals, masks
-```
-
-For the `cheetah_dir` medium-data setting, the scripts additionally accept `states`, `next_states`, and `dones`. Task metadata is loaded from `task_info.json`.
-
-Environment-specific task definitions are loaded from files such as:
-
-```text
-datasets/AntDir-v0/task_goals.pkl
-datasets/HalfCheetahVel-v0/task_goals.pkl
-datasets/HalfCheetahDir-v0/task_goals.pkl
-datasets/HopperRandParams-v0/task_goals.pkl
-datasets/WalkerRandParams-v0/task_goals.pkl
-datasets/Reach/task_goals.pkl
-datasets/PointRobot-v0/task_goals.npy
-```
-
-These files are not included in the repository. Place the data in the expected paths before starting training.
-
-## Training
-
 All commands should be run from the `MODE` repository root. The complete
-meta-training workflow is illustrated in [meta_training.pdf](asset/meta_training.pdf).
+meta-training workflow is illustrated in ![meta_training.pdf](asset/meta_training.pdf).
 The corresponding meta-testing procedure is illustrated in
-[meta_testing.pdf](asset/meta_testing.pdf).
+![meta_testing.pdf](asset/meta_testing.pdf).
 
-### Data Preparation
+## Data Preparation
 
-Before the three MODE training stages, the repository provides a two-step data
-collection procedure. First, `train_data_collection.py` trains a task-specific
-SAC expert. Second, `get_datasets.py` loads the selected expert checkpoints and
+Before the three MODE training stages, we need a two-step data
+collection procedure to generate the multi-task offline dataset. First, we trains a task-specific
+SAC agent. Second, it loads the checkpoints and
 rolls them out to construct fixed-size offline replay datasets.
 
-#### 1. Train Task Experts
+### 1. Train Task Experts
 
 ```bash
 python train_data_collection.py \
@@ -128,7 +75,7 @@ python train_data_collection.py \
     --task_id_end 5
 ```
 
-Expert checkpoints are stored under:
+These checkpoints are stored under:
 
 ```text
 datasets/{env_name}/checkpoints/task_{task_id}/agent_{step}.pt
@@ -137,9 +84,9 @@ datasets/{env_name}/checkpoints/task_{task_id}/agent_{step}.pt
 Training and evaluation logs are written to
 `runs/{env_name}/data_collection/task_{task_id}/`.
 
-#### 2. Generate Offline Datasets
+### 2. Generate Offline Datasets
 
-Once expert checkpoints are available, generate one replay file per task:
+Once those checkpoints are available, generate one replay file per task:
 
 ```bash
 python get_datassets.py \
@@ -160,8 +107,39 @@ datasets/{env_name}/{data_type}/
 ```
 
 Each replay file contains observations, actions, rewards, next observations,
-terminal flags, and timeout masks. Meta-World Reach additionally records task
-success signals.
+terminal flags, and timeout masks.
+
+### Dataset Download
+We also provide our datasets via this [dataset](https://drive.google.com/drive/folders/1E8Wpy15G5p0_r_t3XHSqk19ljeQ3IgHg?usp=sharing).
+The training scripts expect offline datasets under `datasets/`, relative to the repository root. For an environment named `ENV_NAME` and a data setting named `QUALITY`, the expected layout is:
+
+```text
+datasets/
+└── ENV_NAME/
+    └── QUALITY/
+        ├── task_info.json
+        ├── dataset_task_0.pkl
+        ├── dataset_task_1.pkl
+        └── ...
+```
+
+Each task file should contain the transition arrays used by `context/dataset.py`, including observations, actions, rewards, terminal indicators, and masks. The standard format uses keys such as:
+
+```text
+observations, actions, rewards, next_observations,
+terminals, masks
+```
+
+Environment-specific task definitions are loaded from files such as:
+
+```text
+datasets/AntDir-v0/task_goals.pkl
+datasets/HalfCheetahVel-v0/task_goals.pkl
+datasets/HopperRandParams-v0/task_goals.pkl
+datasets/WalkerRandParams-v0/task_goals.pkl
+```
+
+## Training
 
 ### Stage 1: Context Encoder Pretraining
 
@@ -231,7 +209,7 @@ bash downstream_train.sh ant_dir medium
 
 Downstream checkpoints and TensorBoard event files are stored under `saves/`
 and `runs/`, respectively.
-
+<!-- 
 ## Monitoring
 
 Training scripts use TensorBoard-compatible logging. Start TensorBoard from the repository root with:
@@ -240,7 +218,7 @@ Training scripts use TensorBoard-compatible logging. Start TensorBoard from the 
 tensorboard --logdir runs
 ```
 
-Then open the local TensorBoard address printed by the command.
+Then open the local TensorBoard address printed by the command. -->
 
 ## Reproducibility
 
